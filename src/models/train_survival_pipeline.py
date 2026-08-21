@@ -155,7 +155,7 @@ def train_rul_model(
 
 def train_failure_classifier(
     clf_df: pl.DataFrame, train_ids: set[str], test_ids: set[str]
-) -> tuple[lgb.LGBMClassifier, float, float]:
+) -> tuple[lgb.LGBMClassifier, float, float, pd.DataFrame]:
     train_df = clf_df.filter(pl.col("equipment_id").is_in(train_ids))
     test_df = clf_df.filter(pl.col("equipment_id").is_in(test_ids))
 
@@ -175,7 +175,7 @@ def train_failure_classifier(
     preds = model.predict(X_test)
     accuracy = accuracy_score(y_test, preds)
     f1 = f1_score(y_test, preds, average="macro")
-    return model, float(accuracy), float(f1)
+    return model, float(accuracy), float(f1), X_test
 
 
 def compute_shap_importance(
@@ -201,6 +201,60 @@ def save_shap_summary_plot(shap_values: np.ndarray, X_sample: pd.DataFrame, path
     plt.close()
 
 
+def _stack_multiclass_shap(shap_values, n_classes: int) -> np.ndarray:
+    """Normaliza la salida de TreeExplainer.shap_values() a (n_classes, n_samples, n_features).
+
+    Distintas versiones de `shap` devuelven una lista de arrays (una por
+    clase) o un unico ndarray (n_samples, n_features, n_classes) -- se
+    manejan ambos formatos.
+    """
+    if isinstance(shap_values, list):
+        return np.stack([np.abs(sv) for sv in shap_values], axis=0)
+    values = np.abs(shap_values)
+    if values.ndim == 3 and values.shape[-1] == n_classes:
+        return values.transpose(2, 0, 1)
+    raise ValueError(f"Formato de shap_values no reconocido: shape={values.shape}")
+
+
+def compute_shap_importance_multiclass(
+    model: lgb.LGBMClassifier, X_sample: pd.DataFrame, top_n: int = 15
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Importancia SHAP del clasificador de tipo de falla, global y por clase.
+
+    Devuelve (importancia_global_top_n, importancia_por_clase_todas_las_features).
+    """
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_sample)
+    abs_per_class = _stack_multiclass_shap(shap_values, n_classes=len(model.classes_))  # (n_classes, n_samples, n_features)
+
+    mean_abs_per_class = abs_per_class.mean(axis=1)  # (n_classes, n_features)
+    per_class_importance = pd.DataFrame(
+        mean_abs_per_class.T, index=X_sample.columns, columns=model.classes_
+    )
+
+    global_importance = (
+        pd.DataFrame({"feature": X_sample.columns, "mean_abs_shap": mean_abs_per_class.mean(axis=0)})
+        .sort_values("mean_abs_shap", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+    return global_importance, per_class_importance
+
+
+def save_shap_classifier_plot(per_class_importance: pd.DataFrame, top_features: list[str], path: Path) -> None:
+    import matplotlib.pyplot as plt
+
+    subset = per_class_importance.loc[top_features].iloc[::-1]
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.4 * len(top_features))))
+    subset.plot(kind="barh", ax=ax, width=0.75)
+    ax.set_xlabel("Mean |SHAP value|")
+    ax.set_title("Importancia SHAP por tipo de falla (top features)")
+    ax.legend(title="Tipo de falla", bbox_to_anchor=(1.02, 1), loc="upper left")
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -223,7 +277,7 @@ def main() -> None:
     print(f"[RUL] MAE (LightGBM, holdout): {mae:.1f} horas")
 
     clf_df = build_failure_classification_table(features, equipment_metadata, maintenance_logs)
-    clf_model, accuracy, f1 = train_failure_classifier(clf_df, failed_train_ids, failed_test_ids)
+    clf_model, accuracy, f1, X_test_clf = train_failure_classifier(clf_df, failed_train_ids, failed_test_ids)
     print(f"[Clasificacion falla] Accuracy: {accuracy:.3f} | F1-macro: {f1:.3f}")
 
     shap_sample = X_test_rul.sample(n=min(200, len(X_test_rul)), random_state=42)
@@ -232,6 +286,16 @@ def main() -> None:
     save_shap_summary_plot(shap_values, shap_sample, MODELS_DIR / "shap_rul_summary.png")
     print("\n[SHAP] Top features para prediccion de RUL:")
     print(importance.to_string(index=False))
+
+    clf_shap_sample = X_test_clf.sample(n=min(200, len(X_test_clf)), random_state=42)
+    clf_importance, clf_per_class_importance = compute_shap_importance_multiclass(clf_model, clf_shap_sample)
+    clf_importance.to_csv(PROCESSED_DIR / "shap_failure_classifier_importance.csv", index=False)
+    clf_per_class_importance.to_csv(PROCESSED_DIR / "shap_failure_classifier_importance_by_class.csv")
+    save_shap_classifier_plot(
+        clf_per_class_importance, clf_importance["feature"].tolist(), MODELS_DIR / "shap_failure_classifier_summary.png"
+    )
+    print("\n[SHAP] Top features para clasificacion de tipo de falla:")
+    print(clf_importance.to_string(index=False))
 
     joblib.dump(cph, MODELS_DIR / "coxph_model.joblib")
     joblib.dump(rul_model, MODELS_DIR / "rul_lightgbm.joblib")

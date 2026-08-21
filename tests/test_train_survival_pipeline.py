@@ -8,6 +8,7 @@ from src.models.train_survival_pipeline import (
     build_failure_classification_table,
     build_rul_training_table,
     build_survival_table,
+    compute_shap_importance_multiclass,
     equipment_train_test_split,
     fit_survival_model,
     train_failure_classifier,
@@ -69,12 +70,29 @@ def test_failure_classifier_accuracy_in_valid_range(pipeline_inputs):
     failed_ids = equipment_metadata.filter(equipment_metadata["event_observed"])["equipment_id"].to_list()
     train_ids, test_ids = equipment_train_test_split(failed_ids, test_size=0.3, seed=42)
 
-    _, accuracy, f1 = train_failure_classifier(clf_df, train_ids, test_ids)
+    _, accuracy, f1, X_test = train_failure_classifier(clf_df, train_ids, test_ids)
     assert 0.0 <= accuracy <= 1.0
     assert 0.0 <= f1 <= 1.0
+    assert len(X_test) > 0
 
 
 def test_failure_classification_table_one_row_per_failed_equipment(pipeline_inputs):
     equipment_metadata, features, maintenance_logs = pipeline_inputs
     clf_df = build_failure_classification_table(features, equipment_metadata, maintenance_logs)
     assert clf_df["equipment_id"].n_unique() == clf_df.height
+
+
+def test_shap_importance_multiclass_matches_model_classes(pipeline_inputs):
+    equipment_metadata, features, maintenance_logs = pipeline_inputs
+    clf_df = build_failure_classification_table(features, equipment_metadata, maintenance_logs)
+
+    failed_ids = equipment_metadata.filter(equipment_metadata["event_observed"])["equipment_id"].to_list()
+    train_ids, test_ids = equipment_train_test_split(failed_ids, test_size=0.3, seed=42)
+
+    clf_model, _, _, X_test = train_failure_classifier(clf_df, train_ids, test_ids)
+    global_importance, per_class_importance = compute_shap_importance_multiclass(clf_model, X_test)
+
+    assert set(per_class_importance.columns) == set(clf_model.classes_)
+    assert set(global_importance["feature"]) <= set(X_test.columns)
+    assert (global_importance["mean_abs_shap"] >= 0).all()
+    assert (per_class_importance.to_numpy() >= 0).all()

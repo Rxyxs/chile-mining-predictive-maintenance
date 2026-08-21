@@ -128,6 +128,12 @@ por fila, para evitar fuga de datos):
 - **LightGBM Classifier** (tipo de falla mas probable) → Accuracy / F1-macro.
 - **SHAP** sobre el modelo de RUL → `data/processed/shap_rul_importance.csv`
   y `data/processed/models/shap_rul_summary.png`.
+- **SHAP multiclase** sobre el clasificador de tipo de falla → importancia
+  global (`shap_failure_classifier_importance.csv`) y desglosada por clase
+  (`shap_failure_classifier_importance_by_class.csv` +
+  `data/processed/models/shap_failure_classifier_summary.png`), para que un
+  mecanico vea que sensor explica *cada* modo de falla especifico, no solo
+  el RUL agregado.
 
 Guarda modelos en `data/processed/models/` y metricas en
 `data/processed/metrics.json`.
@@ -182,5 +188,4 @@ scoring compartido (`FleetScorer`).
 - Reemplazar el generador Weibull por datos historicos reales de faena.
 - Multi-task learning conjunto (PyTorch) para RUL + clasificacion con
   representacion compartida, en vez de dos LightGBM independientes.
-- SHAP tambien para el clasificador de tipo de falla (multiclase).
 - Autenticacion y rate-limiting en la API para uso productivo en faena.
