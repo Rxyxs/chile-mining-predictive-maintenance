@@ -93,10 +93,11 @@ def fit_survival_model(
 def build_rul_training_table(features: pl.DataFrame, equipment_metadata: pl.DataFrame) -> pl.DataFrame:
     """Filas de telemetria de equipos FALLADOS, con RUL real conocido como etiqueta.
 
-    El RUL resultante queda acotado por la ventana de telemetria retenida
-    (ver `DEFAULT_TELEMETRY_WINDOW_HOURS` en el generador de datos): el
-    modelo entrenado sobre esta tabla predice bien "cuan cerca" esta un
-    equipo dentro de esa ventana, no un RUL de vida completa.
+    Cubre el ciclo de vida completo de cada equipo fallado (la telemetria ya
+    no esta acotada a una ventana reciente -- ver
+    `mining_data_generator.build_sensor_telemetry`), por lo que `rul_hours`
+    va desde 0 (en la falla) hasta miles de horas (en equipos jovenes dentro
+    de su ciclo).
     """
     meta = _equipment_covariates(equipment_metadata)
     df = features.join(meta, on="equipment_id", how="inner")

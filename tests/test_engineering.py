@@ -9,7 +9,7 @@ from src.features.engineering import FEATURE_COLUMNS, FFT_WINDOW, engineer_featu
 @pytest.fixture(scope="module")
 def features():
     _, sensor_telemetry, _ = generate_mining_dataset(
-        n_equipment=15, seed=3, reference_date=date(2026, 8, 20), window_hours=120
+        n_equipment=15, seed=3, reference_date=date(2026, 8, 20), target_readings=120
     )
     return engineer_features(sensor_telemetry)
 

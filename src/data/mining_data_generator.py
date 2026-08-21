@@ -6,8 +6,9 @@ flotillas de camiones de extraccion (CAEX) y chancadores primarios:
 - `equipment_metadata`: especificaciones del equipo y su reloj de
   supervivencia (horas en el ciclo de mantenimiento actual + evento
   observado).
-- `sensor_telemetry`: serie temporal de sensores para la ventana de
-  monitoreo retenida (rolling window) hasta la fecha de referencia.
+- `sensor_telemetry`: serie temporal de sensores para el ciclo de vida
+  completo de cada equipo (0 horas hasta `hours_in_current_cycle`), a
+  resolucion adaptativa -- ver `build_sensor_telemetry`.
 - `maintenance_logs`: eventos de mantenimiento programado y fallas no
   planificadas.
 
@@ -30,7 +31,7 @@ import polars as pl
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 PROCESSED_DIR = DATA_DIR / "processed"
 
-DEFAULT_TELEMETRY_WINDOW_HOURS = 336  # ventana de telemetria retenida (rolling): 14 dias horarios
+DEFAULT_TARGET_READINGS_PER_EQUIPMENT = 600  # cubre el ciclo de vida completo a resolucion adaptativa
 
 FAENAS: dict[str, float] = {
     "Chuquicamata": 0.90,
@@ -241,19 +242,23 @@ def _degradation_curve(life_fraction: np.ndarray, failure_type: str | None, kind
 def build_sensor_telemetry(
     profiles: list[EquipmentProfile],
     seed: int,
-    window_hours: int = DEFAULT_TELEMETRY_WINDOW_HOURS,
-    reading_interval_hours: float = 1.0,
+    target_readings: int = DEFAULT_TARGET_READINGS_PER_EQUIPMENT,
 ) -> pl.DataFrame:
-    """Telemetria horaria para la ventana de monitoreo retenida de cada equipo."""
+    """Telemetria del ciclo de vida completo de cada equipo (0 hasta `hours_in_current_cycle`).
+
+    La resolucion es adaptativa por equipo: si el ciclo dura menos que
+    `target_readings` horas, se muestrea cada hora (alta frecuencia); si es
+    mas largo, el intervalo crece para mantener el numero de lecturas
+    acotado (`target_readings`), evitando que equipos con ciclos muy largos
+    (miles de horas) disparen el volumen de datos. Esto permite que el RUL
+    de entrenamiento cubra el ciclo completo, no solo una ventana reciente.
+    """
     np_rng = np.random.default_rng(seed + 2)
     frames: list[pl.DataFrame] = []
 
     for p in profiles:
-        n_readings = int(min(window_hours, p.hours_in_current_cycle) / reading_interval_hours) + 1
-        n_readings = max(n_readings, 2)
-        hours = np.linspace(
-            max(0.0, p.hours_in_current_cycle - window_hours), p.hours_in_current_cycle, n_readings
-        )
+        n_readings = int(min(target_readings, max(2, round(p.hours_in_current_cycle))))
+        hours = np.linspace(0.0, p.hours_in_current_cycle, n_readings)
         # T de referencia para la curva de degradacion: la falla real simulada
         # (oculta), o el propio ciclo si el equipo aun no muestra desgaste medible.
         t_ref = max(p.true_failure_hours, p.hours_in_current_cycle + 1.0)
@@ -325,7 +330,7 @@ def generate_mining_dataset(
     n_equipment: int = 520,
     seed: int = 42,
     reference_date: date | None = None,
-    window_hours: int = DEFAULT_TELEMETRY_WINDOW_HOURS,
+    target_readings: int = DEFAULT_TARGET_READINGS_PER_EQUIPMENT,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Genera las tres tablas relacionales sinteticas completas."""
     reference_date = reference_date or date.today()
@@ -333,7 +338,7 @@ def generate_mining_dataset(
 
     equipment_metadata = build_equipment_metadata(profiles, reference_date)
     maintenance_logs = build_maintenance_logs(profiles, seed)
-    sensor_telemetry = build_sensor_telemetry(profiles, seed, window_hours=window_hours)
+    sensor_telemetry = build_sensor_telemetry(profiles, seed, target_readings=target_readings)
 
     return equipment_metadata, sensor_telemetry, maintenance_logs
 

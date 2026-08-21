@@ -12,12 +12,20 @@ from pathlib import Path
 import joblib
 import polars as pl
 
-from src.data.mining_data_generator import DEFAULT_TELEMETRY_WINDOW_HOURS
 from src.features.engineering import FEATURE_COLUMNS
 from src.models.train_survival_pipeline import PROCESSED_DIR, build_survival_table, prepare_model_frame
 
 MODELS_DIR = PROCESSED_DIR / "models"
 SURVIVAL_HORIZON_HOURS = 720.0  # 30 dias de operacion continua
+
+# El RUL ahora se entrena sobre el ciclo de vida completo (ver
+# mining_data_generator.build_sensor_telemetry), por lo que estos umbrales
+# son horizontes de negocio reales -- no fracciones de una ventana acotada.
+RISK_THRESHOLDS_HOURS = {
+    "CRITICO": 168.0,  # < 1 semana
+    "ALTO": 720.0,  # < 1 mes
+    "MEDIO": 2160.0,  # < 3 meses
+}
 
 
 def _require(path: Path) -> Path:
@@ -56,14 +64,11 @@ class FleetScorer:
         self.survival_covariates = build_survival_table(self.equipment_metadata).drop(["duration", "event"])
 
     def risk_level(self, rul_hours: float) -> str:
-        # El modelo de RUL solo ve, en entrenamiento, lecturas dentro de la
-        # ventana de telemetria retenida -> sus predicciones no extrapolan
-        # mas alla de ese rango. Los umbrales son fracciones de esa ventana.
-        if rul_hours < 0.15 * DEFAULT_TELEMETRY_WINDOW_HOURS:
+        if rul_hours < RISK_THRESHOLDS_HOURS["CRITICO"]:
             return "CRITICO"
-        if rul_hours < 0.35 * DEFAULT_TELEMETRY_WINDOW_HOURS:
+        if rul_hours < RISK_THRESHOLDS_HOURS["ALTO"]:
             return "ALTO"
-        if rul_hours < 0.65 * DEFAULT_TELEMETRY_WINDOW_HOURS:
+        if rul_hours < RISK_THRESHOLDS_HOURS["MEDIO"]:
             return "MEDIO"
         return "BAJO"
 

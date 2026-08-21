@@ -18,7 +18,7 @@ from src.models.train_survival_pipeline import (
 @pytest.fixture(scope="module")
 def pipeline_inputs():
     equipment_metadata, sensor_telemetry, maintenance_logs = generate_mining_dataset(
-        n_equipment=60, seed=11, reference_date=date(2026, 8, 20), window_hours=150
+        n_equipment=60, seed=11, reference_date=date(2026, 8, 20), target_readings=150
     )
     features = engineer_features(sensor_telemetry)
     return equipment_metadata, features, maintenance_logs

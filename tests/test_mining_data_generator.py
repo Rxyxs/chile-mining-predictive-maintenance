@@ -12,7 +12,7 @@ from src.data.mining_data_generator import (
 @pytest.fixture(scope="module")
 def dataset():
     return generate_mining_dataset(
-        n_equipment=40, seed=7, reference_date=date(2026, 8, 20), window_hours=120
+        n_equipment=40, seed=7, reference_date=date(2026, 8, 20), target_readings=120
     )
 
 

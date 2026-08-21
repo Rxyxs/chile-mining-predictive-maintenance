@@ -64,10 +64,13 @@ chile-mining-predictive-maintenance/
   Chancador Primario), `model`, `faena`, `manufacture_year`, `install_date`,
   `hours_in_current_cycle` (reloj de supervivencia), `event_observed`
   (1=fallo observado, 0=censurado/aun operando).
-- **`sensor_telemetry`**: lecturas horarias de `engine_temp_c`,
-  `vibration_rms_mm_s`, `hydraulic_pressure_bar`, `rpm`,
-  `fuel_consumption_lph` para la ventana de monitoreo retenida de cada
-  equipo (`DEFAULT_TELEMETRY_WINDOW_HOURS = 336`, 14 dias).
+- **`sensor_telemetry`**: lecturas de `engine_temp_c`, `vibration_rms_mm_s`,
+  `hydraulic_pressure_bar`, `rpm`, `fuel_consumption_lph` que cubren el
+  **ciclo de vida completo** de cada equipo (0 horas hasta
+  `hours_in_current_cycle`), a resolucion adaptativa: hora a hora si el
+  ciclo dura menos que `DEFAULT_TARGET_READINGS_PER_EQUIPMENT = 600` horas,
+  o con intervalo creciente si es mas largo, para acotar el volumen de
+  datos sin perder cobertura del ciclo completo.
 - **`maintenance_logs`**: eventos de `mantenimiento_programado` y
   `falla_no_planificada` (con `component`/`failure_type` y `downtime_hours`).
 
@@ -129,10 +132,12 @@ por fila, para evitar fuga de datos):
 Guarda modelos en `data/processed/models/` y metricas en
 `data/processed/metrics.json`.
 
-> El RUL predicho esta acotado por la ventana de telemetria retenida (14
-> dias): el modelo aprende "que tan cerca dentro de esa ventana" esta un
-> equipo, no un RUL de vida completa. Los umbrales de riesgo de la API/
-> dashboard son fracciones de esa ventana para mantenerse calibrados.
+> El RUL se entrena sobre el ciclo de vida completo de cada equipo fallado
+> (no una ventana reciente acotada), por lo que las predicciones van desde
+> 0 horas (en la falla) hasta miles de horas en equipos jovenes dentro de
+> su ciclo. Los umbrales de riesgo (`src/models/scoring.py`) son horizontes
+> de negocio reales: CRITICO < 1 semana, ALTO < 1 mes, MEDIO < 3 meses,
+> BAJO en adelante.
 
 ### 4. Servicio de scoring (FastAPI)
 
@@ -172,12 +177,10 @@ censura, ausencia de fuga en el feature engineering (nulos de warm-up de
 rolling/FFT), rango valido de C-Index/MAE/Accuracy, y contrato del modulo de
 scoring compartido (`FleetScorer`).
 
-## 🔭 Proximas fases
+## 🔭 Siguientes pasos
 
 - Reemplazar el generador Weibull por datos historicos reales de faena.
 - Multi-task learning conjunto (PyTorch) para RUL + clasificacion con
   representacion compartida, en vez de dos LightGBM independientes.
-- Extender el RUL a horizonte completo de vida util (requiere retener
-  telemetria de ciclo completo, no solo la ventana rodante).
 - SHAP tambien para el clasificador de tipo de falla (multiclase).
 - Autenticacion y rate-limiting en la API para uso productivo en faena.
