@@ -4,12 +4,13 @@ Sistema hibrido de Mantenimiento Predictivo para flotillas de **camiones de
 extraccion (CAEX)** y **chancadores primarios** en faenas mineras chilenas
 (Chuquicamata, Escondida, Los Bronces, El Teniente, Radomiro Tomic).
 
-**Fase 1** implementa el pipeline completo: generacion sintetica de la base
-relacional (telemetria + metadatos + mantenimiento, con censura de datos) →
-feature engineering de degradacion (Polars + FFT) → modelo hibrido de
-Survival Analysis (CoxPH) + RUL (LightGBM) + clasificacion de tipo de falla,
-con explicabilidad SHAP → servicio FastAPI de scoring → dashboard Streamlit
-con heatmap de riesgo de flota.
+Pipeline completo: generacion sintetica de la base relacional (telemetria +
+metadatos + mantenimiento, con censura de datos) → feature engineering de
+degradacion (Polars + FFT) → modelo hibrido de Survival Analysis (CoxPH) +
+RUL (LightGBM, con una red multi-task en PyTorch como alternativa
+comparada) + clasificacion de tipo de falla, con explicabilidad SHAP →
+servicio FastAPI de scoring (con autenticacion y rate-limiting) → dashboard
+Streamlit con heatmap de riesgo de flota.
 
 ## 🎯 Problema de negocio
 
@@ -22,17 +23,19 @@ planificadas en faena.
 - Python 3.11+
 - Polars + PyArrow — procesamiento de datos en memoria de alta velocidad
 - LightGBM — regresion de RUL + clasificacion multiclase de tipo de falla
+- PyTorch + scikit-learn — red multi-task (RUL + clasificacion) comparada
 - Lifelines (CoxPH) — Survival Analysis con datos censurados
 - SHAP — explicabilidad tecnica para mecanicos e ingenieros de mantenimiento
-- FastAPI — servicio de score de riesgo operacional
+- FastAPI + slowapi — servicio de score de riesgo con API key y rate-limiting
 - Streamlit + Plotly — dashboard de telemetria de flota con heatmap de riesgo
-- Pytest — validacion de datos, features y modelos
+- Pytest + httpx — validacion de datos, features, modelos y API
 
-> **Nota de diseno:** el enunciado permitia LightGBM *o* PyTorch para el
-> multi-task learning. Se eligio LightGBM para ambas cabezas (regresion RUL
-> + clasificacion de falla) por ser mas liviano de entrenar/servir y mas
-> facil de explicar con SHAP en un pipeline de Fase 1; un modelo conjunto en
-> PyTorch queda como extension natural de Fase 2.
+> **Nota de diseno:** se entrenaron y compararon dos enfoques para RUL +
+> clasificacion de falla: dos modelos LightGBM independientes, y una red
+> multi-task en PyTorch con tronco compartido y dos cabezas. LightGBM se
+> mantiene como modelo de produccion (API/dashboard) por ser mas liviano de
+> servir y explicable directamente con SHAP; la red PyTorch queda disponible
+> como alternativa evaluada — ver tabla de resultados mas abajo.
 
 ## 📁 Estructura
 
@@ -48,9 +51,10 @@ chile-mining-predictive-maintenance/
 │   │   └── engineering.py                # rolling stats, deltas, var. acumulada, FFT
 │   ├── models/
 │   │   ├── train_survival_pipeline.py    # CoxPH + LightGBM (RUL + clasificacion) + SHAP
+│   │   ├── multi_task_net.py             # red PyTorch multi-task (RUL + clasificacion), comparada
 │   │   └── scoring.py                    # carga de artefactos + scoring compartido
 │   ├── api/
-│   │   └── main.py                       # FastAPI: score de riesgo operacional
+│   │   └── main.py                       # FastAPI: score de riesgo (API key + rate-limiting)
 │   └── app/
 │       └── dashboard.py                  # Streamlit: heatmap de riesgo de flota
 ├── tests/
@@ -60,25 +64,68 @@ chile-mining-predictive-maintenance/
 
 ## 🗄️ Esquema relacional sintetico
 
-- **`equipment_metadata`**: `equipment_id`, `equipment_type` (CAEX /
-  Chancador Primario), `model`, `faena`, `manufacture_year`, `install_date`,
-  `hours_in_current_cycle` (reloj de supervivencia), `event_observed`
-  (1=fallo observado, 0=censurado/aun operando).
-- **`sensor_telemetry`**: lecturas de `engine_temp_c`, `vibration_rms_mm_s`,
-  `hydraulic_pressure_bar`, `rpm`, `fuel_consumption_lph` que cubren el
-  **ciclo de vida completo** de cada equipo (0 horas hasta
-  `hours_in_current_cycle`), a resolucion adaptativa: hora a hora si el
-  ciclo dura menos que `DEFAULT_TARGET_READINGS_PER_EQUIPMENT = 600` horas,
-  o con intervalo creciente si es mas largo, para acotar el volumen de
-  datos sin perder cobertura del ciclo completo.
-- **`maintenance_logs`**: eventos de `mantenimiento_programado` y
-  `falla_no_planificada` (con `component`/`failure_type` y `downtime_hours`).
+**`equipment_metadata`** (1 fila por equipo — 520 filas en la corrida por defecto):
+
+| Columna | Tipo | Descripcion |
+|---|---|---|
+| `equipment_id` | str | Identificador unico (`EQ-0000`, ...) |
+| `equipment_type` | str | `CAEX` o `Chancador Primario` |
+| `model` | str | Ej. `Caterpillar 797F`, `Metso Superior MKIII` |
+| `faena` | str | Chuquicamata, Escondida, Los Bronces, El Teniente, Radomiro Tomic |
+| `manufacture_year` | int | Año de fabricacion |
+| `install_date` | date | Fecha de instalacion |
+| `hours_in_current_cycle` | float | Reloj de supervivencia (`duration`) |
+| `event_observed` | bool | `true` = fallo observado, `false` = censurado (aun operando) |
+
+**`sensor_telemetry`** (~312.000 filas en la corrida por defecto):
+
+| Columna | Tipo | Descripcion |
+|---|---|---|
+| `equipment_id` | str | FK a `equipment_metadata` |
+| `timestamp` | datetime | Momento de la lectura |
+| `operating_hours` | float | Horas transcurridas del ciclo actual (0 → `hours_in_current_cycle`) |
+| `engine_temp_c` | float | Temperatura de motor |
+| `vibration_rms_mm_s` | float | Vibracion RMS |
+| `hydraulic_pressure_bar` | float | Presion hidraulica |
+| `rpm` | float | Revoluciones por minuto |
+| `fuel_consumption_lph` | float | Consumo de combustible |
+
+Cubre el **ciclo de vida completo** de cada equipo a resolucion adaptativa:
+hora a hora si el ciclo dura menos que
+`DEFAULT_TARGET_READINGS_PER_EQUIPMENT = 600` horas, o con intervalo
+creciente si es mas largo, para acotar el volumen de datos sin perder
+cobertura del ciclo completo.
+
+**`maintenance_logs`** (~1.240 filas en la corrida por defecto):
+
+| Columna | Tipo | Descripcion |
+|---|---|---|
+| `equipment_id` | str | FK a `equipment_metadata` |
+| `event_type` | str | `mantenimiento_programado` o `falla_no_planificada` |
+| `component` | str | Componente intervenido |
+| `failure_type` | str \| null | Solo si `event_type = falla_no_planificada` |
+| `event_timestamp` | datetime | Momento del evento |
+| `operating_hours_at_event` | float | Horas del ciclo al momento del evento |
+| `downtime_hours` | float | Horas de parada |
 
 El reloj de supervivencia (`hours_in_current_cycle`) modela **horas desde la
 ultima gran intervencion**, no horas de vida total del equipo — asi se
 simula un proceso de renovacion realista: `duration = min(T, C)`,
 `event = 1{T <= C}`, con `T` (tiempo real de falla, Weibull) y `C` (corte de
 observacion) generados por equipo segun su tipo, faena y antiguedad.
+
+<details>
+<summary>Ejemplo real (<code>equipment_metadata.parquet</code>, primeras filas)</summary>
+
+| equipment_id | equipment_type | model | faena | install_date | hours_in_current_cycle | event_observed |
+|---|---|---|---|---|---|---|
+| EQ-0000 | CAEX | Liebherr T 284 | Chuquicamata | 2016-04-08 | 9529.25 | false |
+| EQ-0001 | CAEX | Liebherr T 284 | Chuquicamata | 2025-02-19 | 3090.60 | true |
+| EQ-0002 | CAEX | Caterpillar 797F | Escondida | 2024-10-01 | 2137.36 | false |
+| EQ-0003 | CAEX | Komatsu 930E | Radomiro Tomic | 2015-08-19 | 2498.50 | true |
+| EQ-0004 | Chancador Primario | ThyssenKrupp TS | Escondida | 2021-06-09 | 8404.09 | false |
+
+</details>
 
 ## 🚀 Instalacion
 
@@ -98,8 +145,8 @@ Ejecutar en orden desde la raiz del repositorio:
 python -m src.data.mining_data_generator
 ```
 
-Genera 520+ equipos, ~175k lecturas de telemetria y su historial de
-mantenimiento en `data/processed/*.parquet`.
+Genera 520+ equipos, ~312k lecturas de telemetria (ciclo de vida completo) y
+su historial de mantenimiento en `data/processed/*.parquet`.
 
 ### 2. Feature engineering
 
@@ -145,23 +192,49 @@ Guarda modelos en `data/processed/models/` y metricas en
 > de negocio reales: CRITICO < 1 semana, ALTO < 1 mes, MEDIO < 3 meses,
 > BAJO en adelante.
 
-### 4. Servicio de scoring (FastAPI)
+### 4. Entrenar la red multi-task (PyTorch) — comparacion
+
+```powershell
+python -m src.models.multi_task_net
+```
+
+Entrena una `MultiTaskDegradationNet` (tronco compartido + embeddings de
+`equipment_type`/`faena` + cabezas de regresion RUL y clasificacion de
+falla) sobre el mismo holdout por equipo que el paso anterior, y agrega sus
+metricas a `data/processed/metrics.json` bajo la clave
+`multi_task_pytorch`, para comparar directamente contra LightGBM (ver
+seccion "Resultados" mas abajo).
+
+### 5. Servicio de scoring (FastAPI)
 
 ```powershell
 uvicorn src.api.main:app --reload
 ```
 
+Requiere una API key por header (`X-API-Key`) en todos los endpoints salvo
+`/health`, y aplica rate-limiting por IP (60 req/min por defecto):
+
+```powershell
+$env:MINING_API_KEY = "tu-clave-secreta"      # default: "dev-key-change-me"
+$env:MINING_RATE_LIMIT = "60/minute"          # opcional
+uvicorn src.api.main:app --reload
+```
+
+```powershell
+curl -H "X-API-Key: tu-clave-secreta" http://127.0.0.1:8000/equipment/EQ-0000/risk
+```
+
 Endpoints principales (documentacion interactiva en `/docs`):
 
-- `GET /health`
-- `GET /equipment` — lista de la flota (filtros `faena`, `equipment_type`)
-- `GET /equipment/{equipment_id}/risk` — RUL, tipo de falla probable,
-  probabilidad por clase y supervivencia condicional a 30 dias
-- `GET /fleet/risk-summary` — conteo por nivel de riesgo, global y por faena
-- `POST /score/raw` — scoring ad-hoc a partir de un vector de features
-  (sin necesidad de un `equipment_id` registrado)
+| Endpoint | Auth | Descripcion |
+|---|---|---|
+| `GET /health` | No | Estado del servicio |
+| `GET /equipment` | Si | Lista de la flota (filtros `faena`, `equipment_type`) |
+| `GET /equipment/{equipment_id}/risk` | Si | RUL, tipo de falla probable, probabilidad por clase y supervivencia condicional a 30 dias |
+| `GET /fleet/risk-summary` | Si | Conteo por nivel de riesgo, global y por faena |
+| `POST /score/raw` | Si | Scoring ad-hoc a partir de un vector de features (sin `equipment_id` registrado) |
 
-### 5. Dashboard de flota (Streamlit)
+### 6. Dashboard de flota (Streamlit)
 
 ```powershell
 streamlit run src/app/dashboard.py
@@ -172,20 +245,85 @@ equipo** (una celda = un equipo, coloreado por nivel de riesgo), tabla
 filtrable y panel de detalle por equipo (probabilidades de falla + tendencia
 de sensores).
 
-### 6. Tests
+### 7. Tests
 
 ```powershell
 pytest
 ```
 
-Cubre: integridad del esquema relacional sintetico y consistencia de la
+34 tests: integridad del esquema relacional sintetico y consistencia de la
 censura, ausencia de fuga en el feature engineering (nulos de warm-up de
-rolling/FFT), rango valido de C-Index/MAE/Accuracy, y contrato del modulo de
-scoring compartido (`FleetScorer`).
+rolling/FFT), rango valido de C-Index/MAE/Accuracy, contrato del modulo de
+scoring compartido (`FleetScorer`), entrenamiento de la red multi-task, y
+autenticacion de la API (401 sin key / con key incorrecta, 200 con key
+valida, `/health` publico).
+
+## 📊 Resultados
+
+Metricas de la corrida por defecto (520 equipos, seed 42, holdout 25% de
+equipos fallados para RUL/clasificacion y 25% de todos los equipos para
+supervivencia):
+
+| Modelo | Tarea | Metrica | Valor |
+|---|---|---|---|
+| CoxPH (lifelines) | Supervivencia con censura | C-Index (holdout) | **0.6246** |
+| LightGBM | RUL (regresion) | MAE (holdout) | **512.96 h** |
+| LightGBM | Tipo de falla (clasificacion, ultima lectura) | Accuracy / F1-macro | **1.000 / 1.000** |
+| PyTorch multi-task | RUL (regresion) | MAE (holdout) | 592.31 h |
+| PyTorch multi-task | Tipo de falla (clasificacion, *cada* lectura) | Accuracy / F1-macro | 0.714 / 0.697 |
+
+La comparacion de RUL es directa (mismo holdout, misma etiqueta). La de
+clasificacion no lo es del todo: LightGBM clasifica solo la ultima lectura
+de cada equipo (senal mas limpia, cerca de la falla); PyTorch clasifica
+*cada* lectura individual de telemetria (tarea mas dificil, incluye lecturas
+tempranas con degradacion apenas perceptible) — por eso su accuracy es menor
+aun siendo un modelo razonable. Este resultado confirma la eleccion de
+LightGBM como modelo de produccion.
+
+**Top features SHAP para RUL** (`shap_rul_importance.csv`):
+
+| # | Feature | Mean \|SHAP\| |
+|---|---|---|
+| 1 | `operating_hours` | 721.7 |
+| 2 | `vibration_roll_mean_med` | 653.0 |
+| 3 | `engine_temp_roll_mean_med` | 648.7 |
+| 4 | `fuel_consumption_roll_mean_med` | 312.6 |
+| 5 | `hydraulic_pressure_roll_mean_med` | 261.7 |
+| 6 | `rpm_roll_std_med` | 141.1 |
+| 7 | `vibration_cum_var` | 112.2 |
+| 8 | `age_years` | 98.2 |
+
+**Top features SHAP para tipo de falla** (`shap_failure_classifier_importance.csv`):
+
+| # | Feature | Mean \|SHAP\| |
+|---|---|---|
+| 1 | `vibration_roll_mean_short` | 1.245 |
+| 2 | `hydraulic_pressure_roll_mean_med` | 1.177 |
+| 3 | `vibration_cum_var` | 0.926 |
+| 4 | `engine_temp_roll_mean_med` | 0.703 |
+| 5 | `vibration_roll_mean_med` | 0.516 |
+| 6 | `engine_temp_roll_mean_short` | 0.307 |
+| 7 | `engine_temp_delta_long` | 0.203 |
+| 8 | `age_years` | 0.132 |
+
+Coherente con el diseño del generador: vibracion domina (rodamiento/falla
+estructural) junto con presion hidraulica (fuga hidraulica) y temperatura
+(sobrecalentamiento de motor) — cada sensor explica el modo de falla que
+fisicamente le corresponde.
+
+**Distribucion de riesgo de flota** (`GET /fleet/risk-summary`, umbrales de
+`src/models/scoring.py`):
+
+| Nivel | Equipos | % |
+|---|---|---|
+| CRITICO (< 1 semana) | 171 | 32.9% |
+| ALTO (< 1 mes) | 44 | 8.5% |
+| MEDIO (< 3 meses) | 65 | 12.5% |
+| BAJO (3+ meses) | 240 | 46.2% |
 
 ## 🔭 Siguientes pasos
 
 - Reemplazar el generador Weibull por datos historicos reales de faena.
-- Multi-task learning conjunto (PyTorch) para RUL + clasificacion con
-  representacion compartida, en vez de dos LightGBM independientes.
-- Autenticacion y rate-limiting en la API para uso productivo en faena.
+- Exponer la red PyTorch multi-task tambien en la API/dashboard como
+  alternativa seleccionable, con explicabilidad tipo SHAP para modelos no
+  arboreos (`shap.DeepExplainer` / `GradientExplainer`).

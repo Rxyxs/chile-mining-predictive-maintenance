@@ -5,12 +5,20 @@ probabilidad de supervivencia a 30 dias) para camiones CAEX y chancadores
 primarios, a partir de los modelos entrenados por
 `src.models.train_survival_pipeline`.
 
+Requiere autenticacion por API key (header `X-API-Key`) en todos los
+endpoints salvo `/health`, y aplica rate-limiting por IP.
+
 Ejecutar desde la raiz del repositorio con:
     uvicorn src.api.main:app --reload
+
+Variables de entorno:
+    MINING_API_KEY   API key esperada (default: "dev-key-change-me").
+    MINING_RATE_LIMIT  Limite por IP, formato de `slowapi` (default: "60/minute").
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -18,8 +26,13 @@ from typing import Literal
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import polars as pl
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from src.data.mining_data_generator import EQUIPMENT_TYPES, FAENAS
 from src.models.scoring import FleetScorer
@@ -27,7 +40,23 @@ from src.models.scoring import FleetScorer
 EquipmentType = Literal[tuple(EQUIPMENT_TYPES)]  # type: ignore[misc]
 Faena = Literal[tuple(FAENAS)]  # type: ignore[misc]
 
+API_KEY = os.environ.get("MINING_API_KEY", "dev-key-change-me")
+RATE_LIMIT = os.environ.get("MINING_RATE_LIMIT", "60/minute")
+
 scorer = FleetScorer()
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(key: str | None = Security(_api_key_header)) -> None:
+    if key != API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="API key invalida o ausente. Envia el header 'X-API-Key'.",
+        )
+
+
+limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
 
 
 class RiskScoreResponse(BaseModel):
@@ -70,10 +99,14 @@ app = FastAPI(
     title="Chile Mining Predictive Maintenance API",
     description=(
         "Score de salud de flota (RUL, probabilidad de falla y supervivencia) "
-        "para CAEX y chancadores primarios."
+        "para CAEX y chancadores primarios. Requiere API key (header 'X-API-Key') "
+        "en todos los endpoints salvo /health."
     ),
     version="1.0.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 
 @app.get("/health")
@@ -85,7 +118,7 @@ def health() -> dict:
     }
 
 
-@app.get("/equipment")
+@app.get("/equipment", dependencies=[Depends(require_api_key)])
 def list_equipment(faena: Faena | None = None, equipment_type: EquipmentType | None = None) -> list[dict]:
     df = scorer.equipment_metadata
     if faena is not None:
@@ -97,7 +130,7 @@ def list_equipment(faena: Faena | None = None, equipment_type: EquipmentType | N
     ).to_dicts()
 
 
-@app.get("/equipment/{equipment_id}/risk", response_model=RiskScoreResponse)
+@app.get("/equipment/{equipment_id}/risk", response_model=RiskScoreResponse, dependencies=[Depends(require_api_key)])
 def get_equipment_risk(equipment_id: str) -> dict:
     score = scorer.score_equipment(equipment_id)
     if score is None:
@@ -108,7 +141,7 @@ def get_equipment_risk(equipment_id: str) -> dict:
     return score
 
 
-@app.get("/fleet/risk-summary")
+@app.get("/fleet/risk-summary", dependencies=[Depends(require_api_key)])
 def fleet_risk_summary() -> dict:
     fleet_scores = scorer.score_fleet()
     return {
@@ -121,7 +154,7 @@ def fleet_risk_summary() -> dict:
     }
 
 
-@app.post("/score/raw", response_model=RiskScoreResponse)
+@app.post("/score/raw", response_model=RiskScoreResponse, dependencies=[Depends(require_api_key)])
 def score_raw_telemetry(payload: RawTelemetryFeatures) -> dict:
     row = payload.model_dump()
     return scorer.score_row(row, equipment_id="manual-input", timestamp="n/a")
