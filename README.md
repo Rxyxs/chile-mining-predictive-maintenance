@@ -321,6 +321,40 @@ fisicamente le corresponde.
 | MEDIO (< 3 meses) | 65 | 12.5% |
 | BAJO (3+ meses) | 240 | 46.2% |
 
+## ✅ Conclusiones
+
+- **El pipeline hibrido funciona de punta a punta y con datos reales
+  generados por el propio repositorio**, no solo con codigo: desde la
+  simulacion relacional (censura de datos incluida) hasta un servicio de
+  scoring autenticado y un dashboard operacional, todo entrenado, evaluado
+  y validado con tests sobre las mismas 520 unidades.
+- **CoxPH aporta lo que LightGBM no puede**: un C-Index de 0.6246 es modesto
+  pero consistente — separa razonablemente el riesgo relativo entre
+  equipos con datos censurados (aun operando), algo que un regresor
+  puntual no maneja de forma nativa. Es la pieza correcta para la pregunta
+  "¿que tan probable es que falle pronto?", complementaria al RUL puntual.
+- **El RUL predice con ~513 horas de error sobre un ciclo que llega a
+  16.700 horas** (~3% del rango observado) — suficiente precision para
+  priorizar intervenciones con semanas de anticipacion, no solo para
+  reaccionar a alarmas de ultima hora.
+- **La clasificacion de tipo de falla es confiable y explicable**: accuracy
+  perfecta en el holdout y, mas importante, el ranking SHAP coincide con la
+  fisica del problema (vibracion → rodamiento/estructural, presion →
+  hidraulica, temperatura → motor). Esto es lo que hace que el modelo sea
+  *auditable* por un mecanico, no una caja negra.
+- **La comparacion LightGBM vs. PyTorch multi-task fue una decision basada
+  en evidencia, no en preferencia**: se entreno y evaluo la alternativa
+  real bajo el mismo holdout, y perdio en la metrica que mas importa (MAE
+  de RUL). Mantener LightGBM en produccion es la conclusion del
+  experimento, no un atajo.
+- **Limitacion central, y la mas importante de nombrar**: todo el dataset es
+  sintetico (fallas Weibull, sensores simulados). Las metricas muestran que
+  el *pipeline* es correcto — arquitectura, splits sin fuga, features,
+  explicabilidad, serving — pero no que el modelo prediga fallas reales en
+  faena. El siguiente paso critico antes de cualquier uso productivo es
+  reemplazar el generador por telemetria historica real (primer item de
+  "Siguientes pasos").
+
 ## 🔭 Siguientes pasos
 
 - Reemplazar el generador Weibull por datos historicos reales de faena.
