@@ -1,4 +1,5 @@
-# chile-mining-predictive-maintenance
+# Chile-mining-predictive-maintenance
+
 
 Sistema hibrido de Mantenimiento Predictivo para flotillas de **camiones de
 extraccion (CAEX)** y **chancadores primarios** en faenas mineras chilenas
