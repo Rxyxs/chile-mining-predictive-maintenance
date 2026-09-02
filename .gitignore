@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# Streamlit
+.streamlit/
+
+# Datos y artefactos generados (se regeneran con los scripts de src/)
+data/processed/*.parquet
+data/processed/*.csv
+data/processed/*.json
+data/processed/*.duckdb
+data/processed/models/*.joblib
+data/processed/models/*.pt
+!data/processed/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+CLAUDE.md
+.claude/
