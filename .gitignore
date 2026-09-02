@@ -29,3 +29,8 @@ data/raw/*
 
 CLAUDE.md
 .claude/
+
+# Interactive Plotly dashboard: embeds the full Plotly.js bundle inline (~5.8MB),
+# which was making GitHub misdetect the repo's primary language as HTML instead
+# of the real Python code. Regenerate locally from its source script.
+outputs/interactive/
