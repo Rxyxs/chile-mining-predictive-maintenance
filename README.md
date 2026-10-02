@@ -2,7 +2,7 @@
 
 [Versión en español](README.es.md) · English
 
-![tests](https://github.com/Rxyxs/chile-mining-predictive-maintenance/actions/workflows/ci.yml/badge.svg)
+![tests](https://github.com/Rxyxs/heavy-truck-predictive-maintenance/actions/workflows/ci.yml/badge.svg)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
