@@ -1,123 +1,77 @@
-"""Tests de la API FastAPI (requiere artefactos entrenados en data/processed)."""
-
-import os
-
 import pytest
+from fastapi.testclient import TestClient
 
-os.environ["MINING_API_KEY"] = "test-key"
-os.environ["MINING_RATE_LIMIT"] = "1000/minute"  # evita interferencia con el limite de negocio en tests
+from src.api import main
+from tests.test_scorer import SPECS, make_readouts, scorer  # noqa: F401  (fixture reutilizado)
 
-from src.api.main import app  # noqa: E402
-from src.models.scoring import PROCESSED_DIR  # noqa: E402
-
-pytestmark = pytest.mark.skipif(
-    not (PROCESSED_DIR / "models" / "rul_lightgbm.joblib").exists(),
-    reason="Artefactos entrenados no disponibles: corre el pipeline completo primero.",
-)
-
-_MULTITASK_ARTIFACTS_READY = (PROCESSED_DIR / "models" / "multi_task_shap_background.pt").exists()
-
-_RAW_TELEMETRY_PAYLOAD = {
-    "equipment_type": "CAEX",
-    "faena": "Escondida",
-    "operating_hours": 12000.0,
-    "age_years": 4.0,
-    "engine_temp_roll_mean_short": 92.0,
-    "engine_temp_roll_mean_med": 90.5,
-    "engine_temp_roll_std_med": 2.5,
-    "engine_temp_delta_long": 1.5,
-    "vibration_roll_mean_short": 3.8,
-    "vibration_roll_mean_med": 3.6,
-    "vibration_roll_std_med": 0.4,
-    "vibration_cum_var": 8.0,
-    "vibration_fft_dominant_amp": 1.2,
-    "vibration_fft_spectral_energy": 15.0,
-    "hydraulic_pressure_roll_mean_med": 190.0,
-    "hydraulic_pressure_delta_long": -1.0,
-    "rpm_roll_std_med": 30.0,
-    "fuel_consumption_roll_mean_med": 280.0,
-}
+HEADERS = {"X-API-Key": main.API_KEY}
 
 
-@pytest.fixture(scope="module")
-def client():
-    from fastapi.testclient import TestClient
-
-    with TestClient(app) as c:
-        yield c
-
-
-def test_health_does_not_require_api_key(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+@pytest.fixture()
+def client(scorer, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "_scorer", scorer)
+    main.limiter.reset()
+    return TestClient(main.app)
 
 
-def test_protected_endpoint_without_key_returns_401(client):
-    response = client.get("/equipment")
-    assert response.status_code == 401
+def payload(n=10):
+    return {"readouts": make_readouts(n), "specs": SPECS}
 
 
-def test_protected_endpoint_with_wrong_key_returns_401(client):
-    response = client.get("/equipment", headers={"X-API-Key": "wrong-key"})
-    assert response.status_code == 401
+def test_health_needs_no_key(client):
+    assert client.get("/health").json() == {"status": "ok"}
 
 
-def test_protected_endpoint_with_correct_key_returns_200(client):
-    response = client.get("/equipment", headers={"X-API-Key": "test-key"})
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
-    assert len(response.json()) > 0
+def test_score_requires_an_api_key(client):
+    assert client.post("/score", json=payload()).status_code == 401
 
 
-def test_equipment_risk_requires_key(client):
-    known_id = client.get("/equipment", headers={"X-API-Key": "test-key"}).json()[0]["equipment_id"]
-
-    unauthorized = client.get(f"/equipment/{known_id}/risk")
-    assert unauthorized.status_code == 401
-
-    authorized = client.get(f"/equipment/{known_id}/risk", headers={"X-API-Key": "test-key"})
-    assert authorized.status_code == 200
-    assert authorized.json()["equipment_id"] == known_id
+def test_score_rejects_a_wrong_key(client):
+    assert client.post("/score", json=payload(), headers={"X-API-Key": "nope"}).status_code == 401
 
 
-def test_fleet_risk_summary_requires_key(client):
-    response = client.get("/fleet/risk-summary", headers={"X-API-Key": "test-key"})
-    assert response.status_code == 200
-    assert response.json()["n_equipment_scored"] > 0
+def test_score_returns_the_recommendation(client):
+    r = client.post("/score", json=payload(), headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["probabilidad_por_clase"]) == {"0", "1", "2", "3", "4"}
+    assert 0 <= body["clase_recomendada"] <= 4
+    assert isinstance(body["accion_recomendada"], str)
 
 
-@pytest.mark.skipif(
-    not _MULTITASK_ARTIFACTS_READY,
-    reason="Artefactos DeepSHAP no disponibles: corre `python multitask_pdm.py` primero.",
-)
-def test_multitask_score_requires_key_and_returns_prediction(client):
-    unauthorized = client.post("/multitask/score", json=_RAW_TELEMETRY_PAYLOAD)
-    assert unauthorized.status_code == 401
-
-    response = client.post("/multitask/score", json=_RAW_TELEMETRY_PAYLOAD, headers={"X-API-Key": "test-key"})
-    assert response.status_code == 200
-    body = response.json()
-    assert body["predicted_rul_hours"] >= 0
-    assert body["predicted_failure_type"] in body["failure_type_probabilities"]
-    assert abs(sum(body["failure_type_probabilities"].values()) - 1.0) < 1e-3
+def test_invalid_history_is_a_422_with_a_reason(client):
+    bad = payload(5)
+    bad["readouts"][2]["time_step"] = bad["readouts"][0]["time_step"]
+    r = client.post("/score", json=bad, headers=HEADERS)
+    assert r.status_code == 422
+    assert "creciente" in r.json()["detail"]
 
 
-@pytest.mark.skipif(
-    not _MULTITASK_ARTIFACTS_READY,
-    reason="Artefactos DeepSHAP no disponibles: corre `python multitask_pdm.py` primero.",
-)
-def test_multitask_explicar_returns_shap_for_both_heads(client):
-    response = client.post("/multitask/explicar", json=_RAW_TELEMETRY_PAYLOAD, headers={"X-API-Key": "test-key"})
-    assert response.status_code == 200
-    body = response.json()
-    expected_features = {
-        "engine_temp_roll_mean_short", "engine_temp_roll_mean_med", "engine_temp_roll_std_med",
-        "engine_temp_delta_long", "vibration_roll_mean_short", "vibration_roll_mean_med",
-        "vibration_roll_std_med", "vibration_cum_var", "vibration_fft_dominant_amp",
-        "vibration_fft_spectral_energy", "hydraulic_pressure_roll_mean_med", "hydraulic_pressure_delta_long",
-        "rpm_roll_std_med", "fuel_consumption_roll_mean_med", "operating_hours", "age_years",
-        "equipment_type", "faena",
-    }
-    assert set(body["shap_rul"]) == expected_features
-    assert set(body["shap_failure_type"]) == expected_features
+def test_missing_columns_are_a_422(client):
+    bad = payload(5)
+    for row in bad["readouts"]:
+        row.pop("100_0")
+    assert client.post("/score", json=bad, headers=HEADERS).status_code == 422
+
+
+def test_empty_readouts_fail_validation(client):
+    assert client.post("/score", json={"readouts": [], "specs": SPECS}, headers=HEADERS).status_code == 422
+
+
+def test_untrained_model_is_a_503(monkeypatch):
+    monkeypatch.setattr(main, "_scorer", None)
+
+    def boom():
+        raise FileNotFoundError
+
+    monkeypatch.setattr(main.RiskScorer, "load", staticmethod(boom))
+    main.limiter.reset()
+    r = TestClient(main.app).post("/score", json=payload(), headers=HEADERS)
+    assert r.status_code == 503
+    assert "train_pipeline" in r.json()["detail"]
+
+
+def test_rate_limit_kicks_in(client, monkeypatch):
+    main.limiter.reset()
+    codes = [client.get("/health").status_code for _ in range(70)]
+    assert 429 in codes

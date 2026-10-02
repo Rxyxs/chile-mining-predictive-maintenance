@@ -8,9 +8,6 @@ env/
 .pytest_cache/
 *.egg-info/
 
-# Streamlit
-.streamlit/
-
 # Datos y artefactos generados (se regeneran con los scripts de src/)
 data/processed/*.parquet
 data/processed/*.csv
@@ -27,8 +24,5 @@ data/raw/*
 .idea/
 .DS_Store
 
-
-# Interactive Plotly dashboard: embeds the full Plotly.js bundle inline (~5.8MB),
-# which was making GitHub misdetect the repo's primary language as HTML instead
-# of the real Python code. Regenerate locally from its source script.
-outputs/interactive/
+data/processed/models/*.json
+data/processed/models/*.npy
