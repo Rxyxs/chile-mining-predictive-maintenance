@@ -1,169 +1,97 @@
-"""Extraccion de features de degradacion temporal sobre `sensor_telemetry`.
+"""Features por lectura sobre los contadores acumulados de SCANIA Component X.
 
-Combina expresiones nativas de Polars (rolling stats, deltas, varianza
-acumulada -- todas vectorizadas y evaluadas por equipo) con una
-transformada de Fourier aplicada en ventanas deslizantes sobre la senal de
-vibracion, para capturar componentes periodicas asociadas a defectos de
-rodamientos / desbalance mecanico.
+Las 105 columnas operacionales son contadores y bins de histograma ACUMULADOS desde
+el inicio de la vida del vehiculo (100% no decrecientes). El valor crudo mide mas
+la edad del camion que su estado, asi que se transforma en:
+
+* ``life_rate_*``   : uso medio por unidad de tiempo desde el inicio (``x / time_step``).
+* ``win_rate_*``    : uso por unidad de tiempo en las ultimas ``WINDOW`` lecturas.
+* ``life_frac_*``   : en variables de histograma, fraccion de cada bin sobre su total historico.
+* ``recent_frac_*`` : lo mismo pero solo con el incremento de la ventana reciente.
+* ``n_readouts``, ``dt_prev``: cuantas lecturas hay y hace cuanto fue la anterior.
+
+Cada feature de la lectura ``t`` usa unicamente lecturas ``<= t`` del mismo vehiculo, de modo
+que el calculo sobre la historia completa de train coincide con el que veria un modelo en
+produccion que solo conoce el pasado (hay un test que lo verifica por truncamiento).
 """
 
 from __future__ import annotations
 
-import numpy as np
+from collections import defaultdict
+
 import polars as pl
 
-SHORT_WINDOW = 6
-MED_WINDOW = 24
-LONG_WINDOW = 168
-FFT_WINDOW = 24
-
-SENSOR_COLUMNS = [
-    "engine_temp_c",
-    "vibration_rms_mm_s",
-    "hydraulic_pressure_bar",
-    "rpm",
-    "fuel_consumption_lph",
-]
-
-FEATURE_COLUMNS = [
-    "engine_temp_roll_mean_short",
-    "engine_temp_roll_mean_med",
-    "engine_temp_roll_std_med",
-    "engine_temp_delta_long",
-    "vibration_roll_mean_short",
-    "vibration_roll_mean_med",
-    "vibration_roll_std_med",
-    "vibration_cum_var",
-    "vibration_fft_dominant_amp",
-    "vibration_fft_spectral_energy",
-    "hydraulic_pressure_roll_mean_med",
-    "hydraulic_pressure_delta_long",
-    "rpm_roll_std_med",
-    "fuel_consumption_roll_mean_med",
-]
+ID_COLUMNS = ["vehicle_id", "time_step"]
+WINDOW = 5
+EPS = 1e-9
 
 
-def _rolling_and_delta_features(telemetry: pl.DataFrame) -> pl.DataFrame:
-    df = telemetry.sort(["equipment_id", "timestamp"])
-
-    return df.with_columns(
-        [
-            pl.col("engine_temp_c")
-            .rolling_mean(window_size=SHORT_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("engine_temp_roll_mean_short"),
-            pl.col("engine_temp_c")
-            .rolling_mean(window_size=MED_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("engine_temp_roll_mean_med"),
-            pl.col("engine_temp_c")
-            .rolling_std(window_size=MED_WINDOW, min_samples=2)
-            .over("equipment_id")
-            .alias("engine_temp_roll_std_med"),
-            (
-                pl.col("engine_temp_c")
-                - pl.col("engine_temp_c")
-                .rolling_mean(window_size=LONG_WINDOW, min_samples=1)
-                .over("equipment_id")
-            ).alias("engine_temp_delta_long"),
-            pl.col("vibration_rms_mm_s")
-            .rolling_mean(window_size=SHORT_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("vibration_roll_mean_short"),
-            pl.col("vibration_rms_mm_s")
-            .rolling_mean(window_size=MED_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("vibration_roll_mean_med"),
-            pl.col("vibration_rms_mm_s")
-            .rolling_std(window_size=MED_WINDOW, min_samples=2)
-            .over("equipment_id")
-            .alias("vibration_roll_std_med"),
-            pl.col("hydraulic_pressure_bar")
-            .rolling_mean(window_size=MED_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("hydraulic_pressure_roll_mean_med"),
-            (
-                pl.col("hydraulic_pressure_bar")
-                - pl.col("hydraulic_pressure_bar")
-                .rolling_mean(window_size=LONG_WINDOW, min_samples=1)
-                .over("equipment_id")
-            ).alias("hydraulic_pressure_delta_long"),
-            pl.col("rpm")
-            .rolling_std(window_size=MED_WINDOW, min_samples=2)
-            .over("equipment_id")
-            .alias("rpm_roll_std_med"),
-            pl.col("fuel_consumption_lph")
-            .rolling_mean(window_size=MED_WINDOW, min_samples=1)
-            .over("equipment_id")
-            .alias("fuel_consumption_roll_mean_med"),
-        ]
-    )
+def variable_groups(columns: list[str]) -> dict[str, list[str]]:
+    """Agrupa columnas ``<variable>_<bin>`` por variable, ordenadas por bin."""
+    groups: dict[str, list[str]] = defaultdict(list)
+    for col in columns:
+        if col in ID_COLUMNS:
+            continue
+        groups[col.rsplit("_", 1)[0]].append(col)
+    return {k: sorted(v, key=lambda c: int(c.rsplit("_", 1)[1])) for k, v in groups.items()}
 
 
-def _cumulative_variance(df: pl.DataFrame) -> pl.DataFrame:
-    """Varianza acumulada (expanding) de la vibracion por equipo, via sumas acumuladas."""
-    cum_n = pl.int_range(1, pl.len() + 1).over("equipment_id")
-    cum_sum = pl.col("vibration_rms_mm_s").cum_sum().over("equipment_id")
-    cum_sum_sq = (pl.col("vibration_rms_mm_s") ** 2).cum_sum().over("equipment_id")
-    mean = cum_sum / cum_n
-    var = (cum_sum_sq / cum_n) - mean**2
-
-    return df.with_columns(var.clip(lower_bound=0).alias("vibration_cum_var"))
-
-
-def _fft_features_for_group(group: pl.DataFrame) -> pl.DataFrame:
-    """Amplitud dominante y energia espectral de la vibracion en ventanas deslizantes."""
-    values = group["vibration_rms_mm_s"].to_numpy()
-    n = len(values)
-    dominant_amp = np.full(n, np.nan)
-    spectral_energy = np.full(n, np.nan)
-
-    if n >= FFT_WINDOW:
-        windows = np.lib.stride_tricks.sliding_window_view(values, FFT_WINDOW)
-        spectrum = np.fft.rfft(windows, axis=1)
-        magnitude = np.abs(spectrum)[:, 1:]  # excluye componente DC
-        dominant = magnitude.max(axis=1)
-        energy = (magnitude**2).sum(axis=1) / FFT_WINDOW
-        dominant_amp[FFT_WINDOW - 1 :] = dominant
-        spectral_energy[FFT_WINDOW - 1 :] = energy
-
-    return group.with_columns(
-        [
-            pl.Series("vibration_fft_dominant_amp", dominant_amp).fill_nan(None),
-            pl.Series("vibration_fft_spectral_energy", spectral_energy).fill_nan(None),
-        ]
-    )
+def feature_names(columns: list[str]) -> list[str]:
+    names = ["time_step", "n_readouts", "dt_prev"]
+    groups = variable_groups(columns)
+    for cols in groups.values():
+        for c in cols:
+            names += [f"life_rate_{c}", f"win_rate_{c}"]
+        if len(cols) > 1:
+            for c in cols:
+                names += [f"life_frac_{c}", f"recent_frac_{c}"]
+    return names
 
 
-def _fft_features(df: pl.DataFrame) -> pl.DataFrame:
-    return df.group_by("equipment_id", maintain_order=True).map_groups(_fft_features_for_group)
+def engineer_features(readouts: pl.DataFrame, window: int = WINDOW) -> pl.DataFrame:
+    """Devuelve ``vehicle_id``, ``time_step`` y las features, una fila por lectura."""
+    cols = [c for c in readouts.columns if c not in ID_COLUMNS]
+    groups = variable_groups(cols)
+    vid = "vehicle_id"
+
+    df = readouts.sort(ID_COLUMNS)
+    # Contadores acumulados: un nulo se rellena con la ultima lectura conocida del vehiculo.
+    df = df.with_columns([pl.col(c).forward_fill().over(vid) for c in cols])
+
+    t = pl.col("time_step")
+    t_back = pl.coalesce([t.shift(window).over(vid), t.first().over(vid)])
+    span = t - t_back
+
+    exprs: list[pl.Expr] = [
+        t,
+        pl.int_range(1, pl.len() + 1).over(vid).alias("n_readouts"),
+        (t - t.shift(1).over(vid)).alias("dt_prev"),
+    ]
+    for var, var_cols in groups.items():
+        for c in var_cols:
+            x = pl.col(c)
+            x_back = pl.coalesce([x.shift(window).over(vid), x.first().over(vid)])
+            exprs.append((x / t.clip(lower_bound=1.0)).alias(f"life_rate_{c}"))
+            exprs.append(pl.when(span > EPS).then((x - x_back) / span).otherwise(None).alias(f"win_rate_{c}"))
+        if len(var_cols) > 1:
+            total = pl.sum_horizontal(var_cols)
+            recent_total = pl.sum_horizontal(
+                [pl.col(c) - pl.coalesce([pl.col(c).shift(window).over(vid), pl.col(c).first().over(vid)]) for c in var_cols]
+            )
+            for c in var_cols:
+                x = pl.col(c)
+                x_back = pl.coalesce([x.shift(window).over(vid), x.first().over(vid)])
+                exprs.append(pl.when(total > EPS).then(x / total).otherwise(None).alias(f"life_frac_{c}"))
+                exprs.append(
+                    pl.when(recent_total > EPS).then((x - x_back) / recent_total).otherwise(None).alias(f"recent_frac_{c}")
+                )
+
+    out = df.select([pl.col(vid), *exprs])
+    # time_step queda en Float64: es la llave de union con las etiquetas y Float32 la corrompe.
+    float_cols = [c for c in out.columns if c not in (vid, "n_readouts", "time_step")]
+    return out.with_columns([pl.col(c).cast(pl.Float32) for c in float_cols])
 
 
-def engineer_features(telemetry: pl.DataFrame) -> pl.DataFrame:
-    """Aplica el pipeline completo de feature engineering sobre telemetria cruda.
-
-    Devuelve el DataFrame original con las columnas de `FEATURE_COLUMNS`
-    anadidas, ordenado por (equipment_id, timestamp).
-    """
-    df = _rolling_and_delta_features(telemetry)
-    df = _cumulative_variance(df)
-    df = _fft_features(df)
-    return df.sort(["equipment_id", "timestamp"])
-
-
-def main() -> None:
-    from pathlib import Path
-
-    processed_dir = Path(__file__).resolve().parents[2] / "data" / "processed"
-    telemetry = pl.read_parquet(processed_dir / "sensor_telemetry.parquet")
-
-    features = engineer_features(telemetry)
-    features.write_parquet(processed_dir / "telemetry_features.parquet")
-
-    print(f"Filas procesadas: {features.height}")
-    print(f"Columnas de features generadas: {len(FEATURE_COLUMNS)}")
-    print(features.select(["equipment_id", "timestamp", *FEATURE_COLUMNS]).tail(5))
-
-
-if __name__ == "__main__":
-    main()
+def last_readout_per_vehicle(features: pl.DataFrame) -> pl.DataFrame:
+    """Fila de cada vehiculo en su ultima lectura (el punto de decision en validacion/test)."""
+    return features.sort(ID_COLUMNS).group_by("vehicle_id", maintain_order=True).last()

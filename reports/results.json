@@ -1,0 +1,363 @@
+{
+  "datos": {
+    "vehiculos_train": 23550,
+    "reparaciones_train": 2272,
+    "lecturas_train": 1122452,
+    "features": 415
+  },
+  "clasificador": {
+    "iteraciones": 162,
+    "validation": {
+      "siempre_sano": {
+        "costo_total": 57400,
+        "fallas_reales": 136,
+        "fallas_alarmadas": 0,
+        "recall_alarma": 0.0,
+        "falsas_alarmas": 0,
+        "camiones_sanos": 4910,
+        "tasa_falsa_alarma": 0.0,
+        "matriz_confusion": [
+          [
+            4910,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            16,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            14,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            30,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            76,
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "argmax": {
+        "costo_total": 52726,
+        "fallas_reales": 136,
+        "fallas_alarmadas": 27,
+        "recall_alarma": 0.19852941176470587,
+        "falsas_alarmas": 468,
+        "camiones_sanos": 4910,
+        "tasa_falsa_alarma": 0.09531568228105906,
+        "matriz_confusion": [
+          [
+            4442,
+            40,
+            70,
+            124,
+            234
+          ],
+          [
+            15,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            13,
+            0,
+            1,
+            0,
+            0
+          ],
+          [
+            25,
+            2,
+            0,
+            0,
+            3
+          ],
+          [
+            56,
+            3,
+            3,
+            4,
+            10
+          ]
+        ]
+      },
+      "costo_esperado_minimo": {
+        "costo_total": 41141,
+        "fallas_reales": 136,
+        "fallas_alarmadas": 127,
+        "recall_alarma": 0.9338235294117647,
+        "falsas_alarmas": 3640,
+        "camiones_sanos": 4910,
+        "tasa_falsa_alarma": 0.7413441955193483,
+        "matriz_confusion": [
+          [
+            1270,
+            15,
+            227,
+            257,
+            3141
+          ],
+          [
+            2,
+            0,
+            0,
+            0,
+            14
+          ],
+          [
+            1,
+            0,
+            1,
+            0,
+            12
+          ],
+          [
+            2,
+            0,
+            2,
+            1,
+            25
+          ],
+          [
+            4,
+            0,
+            0,
+            6,
+            66
+          ]
+        ]
+      },
+      "n_vehiculos": 5046,
+      "auc_algun_riesgo": 0.7087366718581527
+    },
+    "test": {
+      "siempre_sano": {
+        "costo_total": 56100,
+        "fallas_reales": 142,
+        "fallas_alarmadas": 0,
+        "recall_alarma": 0.0,
+        "falsas_alarmas": 0,
+        "camiones_sanos": 4903,
+        "tasa_falsa_alarma": 0.0,
+        "matriz_confusion": [
+          [
+            4903,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            26,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            15,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            41,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            60,
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "argmax": {
+        "costo_total": 54781,
+        "fallas_reales": 142,
+        "fallas_alarmadas": 6,
+        "recall_alarma": 0.04225352112676056,
+        "falsas_alarmas": 96,
+        "camiones_sanos": 4903,
+        "tasa_falsa_alarma": 0.01957984907199674,
+        "matriz_confusion": [
+          [
+            4807,
+            12,
+            16,
+            27,
+            41
+          ],
+          [
+            25,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            15,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            40,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            56,
+            0,
+            0,
+            2,
+            2
+          ]
+        ]
+      },
+      "costo_esperado_minimo": {
+        "costo_total": 38625,
+        "fallas_reales": 142,
+        "fallas_alarmadas": 109,
+        "recall_alarma": 0.7676056338028169,
+        "falsas_alarmas": 2447,
+        "camiones_sanos": 4903,
+        "tasa_falsa_alarma": 0.49908219457475017,
+        "matriz_confusion": [
+          [
+            2456,
+            20,
+            196,
+            343,
+            1888
+          ],
+          [
+            6,
+            0,
+            2,
+            3,
+            15
+          ],
+          [
+            4,
+            0,
+            0,
+            0,
+            11
+          ],
+          [
+            11,
+            0,
+            0,
+            3,
+            27
+          ],
+          [
+            12,
+            0,
+            3,
+            4,
+            41
+          ]
+        ]
+      },
+      "n_vehiculos": 5045,
+      "auc_algun_riesgo": 0.6989784926159035
+    }
+  },
+  "tiempo_restante": {
+    "camiones_fallados_train": 1704,
+    "camiones_fallados_holdout": 568,
+    "mae": 45.40622901807462,
+    "mae_baseline_mediana": 67.07872405841661,
+    "mae_ultimas_48": 37.78471392956835,
+    "mae_ultimas_48_baseline": 80.36642496847416,
+    "lecturas_holdout": 26020,
+    "lecturas_ultimas_48": 6344
+  },
+  "supervivencia": {
+    "landmark": 50.0,
+    "vehiculos_en_riesgo": 23333,
+    "especificaciones": {
+      "c_index": 0.6476,
+      "n_covariables": 55
+    },
+    "uso_temprano": {
+      "c_index": 0.6728,
+      "n_covariables": 8
+    },
+    "ambos": {
+      "c_index": 0.7035,
+      "n_covariables": 63
+    }
+  },
+  "shap_top": [
+    {
+      "feature": "time_step",
+      "mean_abs_shap": 0.2659
+    },
+    {
+      "feature": "n_readouts",
+      "mean_abs_shap": 0.1665
+    },
+    {
+      "feature": "Spec_7",
+      "mean_abs_shap": 0.1096
+    },
+    {
+      "feature": "Spec_6",
+      "mean_abs_shap": 0.0292
+    },
+    {
+      "feature": "recent_frac_158_9",
+      "mean_abs_shap": 0.0217
+    },
+    {
+      "feature": "life_rate_158_0",
+      "mean_abs_shap": 0.0216
+    },
+    {
+      "feature": "life_rate_397_12",
+      "mean_abs_shap": 0.0201
+    },
+    {
+      "feature": "life_frac_397_12",
+      "mean_abs_shap": 0.0183
+    },
+    {
+      "feature": "life_rate_309_0",
+      "mean_abs_shap": 0.0181
+    },
+    {
+      "feature": "win_rate_158_9",
+      "mean_abs_shap": 0.0168
+    }
+  ]
+}
